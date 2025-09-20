@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Rebater a Bolinha — Joguinho</title>
+  <style>
+    /* Reset e layout */
+    html,body{
+      height:100%;
+      margin:0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+      background: linear-gradient(180deg,#0f1724 0%, #081020 100%);
+      color:#e6eef8;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+    }
+
+    .wrap{
+      width:90%;
+      max-width:720px;
+      aspect-ratio: 3/5; /* área um pouco maior conforme pediu */
+      display:flex;
+      flex-direction:column;
+      gap:12px;
+      align-items:center;
+    }
+
+    header{
+      width:100%;
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:12px;
+    }
+
+    h1{
+      font-size:18px;
+      margin:0;
+      font-weight:600;
+    }
+
+    .info {
+      font-size:13px;
+      opacity:0.85;
+    }
+
+    canvas{
+      width:100%;
+      flex:1 1 auto;
+      background:
+        repeating-linear-gradient(180deg, rgba(255,255,255,0.02) 0 1px, transparent 1px 30px),
+        radial-gradient(1200px 400px at 10% 10%, rgba(255,255,255,0.02), transparent 10%),
+        rgba(2,6,23,0.7);
+      border-radius:8px;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.02);
+      touch-action: none; /* importante pra touch */
+    }
+
+    .controls{
+      display:flex;
+      gap:8px;
+      width:100%;
+      justify-content:space-between;
+      align-items:center;
+      font-size:13px;
+    }
+
+    button{
+      background:#0b1220;
+      color:#e6eef8;
+      border:1px solid rgba(255,255,255,0.06);
+      padding:6px 10px;
+      border-radius:6px;
+      cursor:pointer;
+      font-weight:600;
+    }
+
+    .small {
+      font-size:12px;
+      opacity:0.9;
+    }
+
+    footer{
+      font-size:12px;
+      opacity:0.8;
+      width:100%;
+      text-align:center;
+      margin-top:6px;
+    }
+
+    @media (max-width:420px){
+      h1{ font-size:16px }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Rebater a Bolinha</h1>
+      <div class="info">Use mouse / touch / ← → (setas)</div>
+    </header>
+
+    <canvas id="game"></canvas>
+
+    <div class="controls">
+      <div>
+        <span class="small">Score: </span><strong id="score">0</strong>
+        &nbsp;•&nbsp;
+        <span class="small">Vidas: </span><strong id="lives">3</strong>
+        &nbsp;•&nbsp;
+        <span class="small">Recorde: </span><strong id="highscore">0</strong>
+      </div>
+
+      <div style="display:flex; gap:8px;">
+        <button id="startBtn">Iniciar / Reiniciar</button>
+        <button id="pauseBtn">Pausar</button>
+      </div>
+    </div>
+
+    <footer>Toque na tela para controlar. Bola acelera levemente a cada 5 pontos. Caixinha de vida cai a cada 30 rebatidas.</footer>
+  </div>
+
+  <script>
+    // ELEMENTOS
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d', { alpha: false });
+    const scoreEl = document.getElementById('score');
+    const livesEl = document.getElementById('lives');
+    const highEl = document.getElementById('highscore');
+    const startBtn = document.getElementById('startBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+
+    // RESIZE adaptável com DPR
+    function resize() {
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      // força height do CSS (garante layout previsível)
+      canvas.style.height = canvas.clientHeight + 'px';
+      canvas.width = Math.round(canvas.clientWidth * dpr);
+      canvas.height = Math.round(canvas.clientHeight * dpr);
+      // ajustar contexto pra desenhar em px "CSS" (1 unidade = 1 CSSpx)
+      ctx.setTransform(dpr,0,0,dpr,0,0);
+    }
+    window.addEventListener('resize', resize);
+    setTimeout(resize, 50);
+
+    // ESTADO DO JOGO
+    let score = 0;
+    let lives = 3;
+    let running = false;
+    let paused = false;
+    let highscore = parseInt(localStorage.getItem('rebaterHigh') || '0', 10);
+
+    // CONFIGS
+    const config = {
+      paddleWidthRatio: 0.18,
+      paddleHeight: 12,
+      paddleYMargin: 24,
+      ballRadius: 9,
+      initialBallSpeed: 610,
+      speedIncreaseEvery: 5,
+      speedMultiplier: 1.05,
+      maxBallSpeed: 2000
+    };
+
+    // OBJETOS
+    const game = {
+      pw: 100, ph: config.paddleHeight, px: 0, py: 0,
+      ball: { x: 0, y: 0, vx: 0, vy: 0, r: config.ballRadius, color: '#ffd166' },
+      boxes: [], // caixinhas de vida
+      lastTime: null
+    };
+
+    // Inicializa / reinicia jogo
+    function initGame() {
+      resize();
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      const W = canvas.width / dpr;
+      const H = canvas.height / dpr;
+
+      game.pw = Math.max(60, W * config.paddleWidthRatio);
+      game.ph = config.paddleHeight;
+      game.px = (W - game.pw) / 2;
+      game.py = H - game.ph - config.paddleYMargin;
+
+      game.ball.r = config.ballRadius;
+      game.ball.x = W / 2;
+      game.ball.y = H / 2;
+      game.ball.color = '#ffd166';
+
+      const angle = (Math.random() * Math.PI / 2) + Math.PI/4; // 45° - 135°
+      const speed = config.initialBallSpeed;
+      game.ball.vx = speed * Math.cos(angle) * (Math.random() < 0.5 ? 1 : -1);
+      game.ball.vy = -Math.abs(speed * Math.sin(angle));
+
+      game.lastTime = performance.now();
+      score = 0;
+      lives = 3;
+      game.boxes = [];
+      updateUI();
+    }
+
+    function updateUI(){
+      scoreEl.textContent = score;
+      livesEl.textContent = lives;
+      highEl.textContent = highscore;
+    }
+
+    // Desenha
+    function draw() {
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      const W = canvas.width / dpr;
+      const H = canvas.height / dpr;
+
+      ctx.clearRect(0,0,W,H);
+
+      // plataforma
+      ctx.fillStyle = '#d7e9ff';
+      roundRect(ctx, game.px, game.py, game.pw, game.ph, 6);
+      ctx.fill();
+
+      // bola
+      ctx.beginPath();
+      ctx.fillStyle = game.ball.color;
+      ctx.arc(game.ball.x, game.ball.y, game.ball.r, 0, Math.PI*2);
+      ctx.fill();
+
+      // caixas de vida
+      for (let b of game.boxes){
+        ctx.fillStyle = '#7ee787'; // verde suave
+        ctx.fillRect(b.x, b.y, b.size, b.size);
+        // desenhar um coração pequeno (opcional visual)
+        ctx.fillStyle = 'rgba(255,255,255,0.85)';
+        ctx.font = '10px system-ui, Arial';
+        ctx.fillText('+1', b.x + 3, b.y + b.size - 4);
+      }
+
+      // HUD
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      ctx.fillRect(8,8,170,34);
+      ctx.fillStyle = '#e6eef8';
+      ctx.font = 'bold 14px system-ui, Arial';
+      ctx.fillText('Score: ' + score + '  •  Recorde: ' + highscore, 16, 30);
+    }
+
+    function roundRect(ctx, x, y, w, h, r){
+      ctx.beginPath();
+      ctx.moveTo(x+r, y);
+      ctx.arcTo(x+w, y, x+w, y+h, r);
+      ctx.arcTo(x+w, y+h, x, y+h, r);
+      ctx.arcTo(x, y+h, x, y, r);
+      ctx.arcTo(x, y, x+w, y, r);
+      ctx.closePath();
+    }
+
+    // Física
+    function updatePhysics(dt) {
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      const W = canvas.width / dpr;
+      const H = canvas.height / dpr;
+
+      // move bola
+      game.ball.x += game.ball.vx * dt;
+      game.ball.y += game.ball.vy * dt;
+
+      // colisões laterais
+      if (game.ball.x - game.ball.r < 0) {
+        game.ball.x = game.ball.r;
+        game.ball.vx *= -1;
+      } else if (game.ball.x + game.ball.r > W) {
+        game.ball.x = W - game.ball.r;
+        game.ball.vx *= -1;
+      }
+
+      // teto
+      if (game.ball.y - game.ball.r < 0) {
+        game.ball.y = game.ball.r;
+        game.ball.vy *= -1;
+      }
+
+      // colisão com paddle
+      const px1 = game.px;
+      const px2 = game.px + game.pw;
+      const py = game.py;
+      if (
+        game.ball.y + game.ball.r >= py &&
+        game.ball.y + game.ball.r <= py + game.ph + 10 &&
+        game.ball.x >= px1 - 2 &&
+        game.ball.x <= px2 + 2 &&
+        game.ball.vy > 0
+      ) {
+        const rel = ((game.ball.x - (game.px + game.pw/2)) / (game.pw/2));
+        const bounceAngle = rel * (Math.PI/3); // -60° a 60°
+        const speed = Math.hypot(game.ball.vx, game.ball.vy);
+        game.ball.vx = speed * Math.sin(bounceAngle);
+        game.ball.vy = -Math.abs(speed * Math.cos(bounceAngle));
+        game.ball.y = py - game.ball.r - 1;
+
+        // cor aleatória ao rebater
+        game.ball.color = `rgb(${rand255()},${rand255()},${rand255()})`;
+
+        incrementScore();
+      }
+
+      // caiu
+      if (game.ball.y - game.ball.r > H) {
+        loseLife();
+      }
+
+      // atualizar caixas de vida
+      for (let i = game.boxes.length - 1; i >= 0; i--) {
+        const b = game.boxes[i];
+        b.y += b.speed * dt;
+        // se saiu da tela
+        if (b.y > H) {
+          game.boxes.splice(i, 1);
+          continue;
+        }
+        // colisão caixa <-> paddle
+        if (b.x < game.px + game.pw &&
+            b.x + b.size > game.px &&
+            b.y + b.size > game.py &&
+            b.y < game.py + game.ph) {
+          lives = Math.min(lives + 1, 9); // limita max de vidas (opcional)
+          updateUI();
+          game.boxes.splice(i, 1);
+        }
+      }
+    }
+
+    function rand255(){ return Math.floor(Math.random()*256); }
+
+    function incrementScore(){
+      score += 1;
+      if (score > highscore){
+        highscore = score;
+        localStorage.setItem('rebaterHigh', String(highscore));
+      }
+
+      if (score % config.speedIncreaseEvery === 0) {
+        let curSpeed = Math.hypot(game.ball.vx, game.ball.vy);
+        curSpeed = Math.min(config.maxBallSpeed, curSpeed * config.speedMultiplier);
+        const dirx = game.ball.vx / Math.hypot(game.ball.vx, game.ball.vy);
+        const diry = game.ball.vy / Math.hypot(game.ball.vx, game.ball.vy);
+        game.ball.vx = dirx * curSpeed;
+        game.ball.vy = diry * curSpeed;
+      }
+
+      // a cada 30 rebatidas, spawna uma caixinha
+      if (score % 30 === 0) {
+        spawnBox();
+      }
+      updateUI();
+    }
+
+    function spawnBox(){
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      const W = canvas.width / dpr;
+      const size = 18;
+      game.boxes.push({
+        x: Math.random() * (W - size),
+        y: -size - 4,
+        size: size,
+        speed: 80 + Math.random() * 60 // lenta-média
+      });
+    }
+
+    function loseLife(){
+      lives -= 1;
+      updateUI();
+      if (lives <= 0) {
+        running = false;
+        paused = false;
+        showGameOver();
+      } else {
+        // reset bola mantendo paddle
+        const dpr = Math.max(1, window.devicePixelRatio || 1);
+        const W = canvas.width / dpr;
+        const H = canvas.height / dpr;
+        game.ball.x = W / 2;
+        game.ball.y = H / 2;
+        const angle = (Math.random() * Math.PI / 2) + Math.PI/4;
+        const baseSpeed = config.initialBallSpeed + Math.min(400, score * 8);
+        game.ball.vx = baseSpeed * Math.cos(angle) * (Math.random() < 0.5 ? 1 : -1);
+        game.ball.vy = -Math.abs(baseSpeed * Math.sin(angle));
+      }
+    }
+
+    function showGameOver() {
+      setTimeout(() => {
+        alert('Game Over!\nSeu score: ' + score);
+        initGame();
+        draw();
+      }, 50);
+    }
+
+    // CONTROLES: mouse, touch, teclado
+    function movePaddleTo(xCss){ // xCss em CSS pixels (clientX - rect.left)
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      const W = canvas.width / dpr;
+      game.px = xCss - game.pw / 2;
+      if (game.px < 0) game.px = 0;
+      if (game.px + game.pw > W) game.px = W - game.pw;
+    }
+
+    // mouse
+    canvas.addEventListener('mousemove', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      movePaddleTo(x);
+    });
+
+    // touch (suporta toque e arraste)
+    canvas.addEventListener('touchstart', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.touches[0].clientX - rect.left;
+      movePaddleTo(x);
+    }, {passive:false});
+
+    canvas.addEventListener('touchmove', (e) => {
+      e.preventDefault(); // evita scroll
+      const rect = canvas.getBoundingClientRect();
+      const x = e.touches[0].clientX - rect.left;
+      movePaddleTo(x);
+    }, {passive:false});
+
+    canvas.addEventListener('touchend', () => { /* nada extra */ });
+
+    // teclado
+    const keys = { left:false, right:false };
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowLeft') keys.left = true;
+      if (e.key === 'ArrowRight') keys.right = true;
+      if (e.key.toLowerCase() === 'p') togglePause();
+    });
+    window.addEventListener('keyup', (e) => {
+      if (e.key === 'ArrowLeft') keys.left = false;
+      if (e.key === 'ArrowRight') keys.right = false;
+    });
+
+    // atualiza paddle pelo teclado
+    function keyboardPaddleUpdate(dt) {
+      if (!keys.left && !keys.right) return;
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      const W = canvas.width / dpr;
+      // velocidade relativa ao tamanho (ajustável)
+      const speed = Math.max(300, W); // px/s
+      if (keys.left) game.px -= speed * dt;
+      if (keys.right) game.px += speed * dt;
+      if (game.px < 0) game.px = 0;
+      if (game.px + game.pw > W) game.px = W - game.pw;
+    }
+
+    // Integra keyboard no updatePhysics: wrap original
+    const originalUpdatePhysics = updatePhysics;
+    updatePhysics = function(dt){
+      keyboardPaddleUpdate(dt);
+      originalUpdatePhysics(dt);
+    }
+
+    // LOOP
+    function loop(now) {
+      if(!running || paused) {
+        game.lastTime = now;
+        requestAnimationFrame(loop);
+        return;
+      }
+      const dt = Math.min(0.03, (now - game.lastTime) / 1000);
+      game.lastTime = now;
+
+      updatePhysics(dt);
+      draw();
+
+      requestAnimationFrame(loop);
+    }
+
+    // START/PAUSE
+    function startGame() {
+      if (!running) {
+        running = true;
+        paused = false;
+        game.lastTime = performance.now();
+      }
+    }
+    function togglePause() {
+      paused = !paused;
+      pauseBtn.textContent = paused ? 'Retomar' : 'Pausar';
+    }
+
+    startBtn.addEventListener('click', () => {
+      initGame();
+      startGame();
+    });
+    pauseBtn.addEventListener('click', () => {
+      togglePause();
+    });
+
+    // iniciar já pronto
+    initGame();
+    draw();
+    requestAnimationFrame(loop);
+
+    // clique no canvas inicia
+    canvas.addEventListener('click', () => {
+      if (!running) startGame();
+    });
+
+    // evita seleção no canvas
+    document.addEventListener('selectstart', (e) => { if (e.target === canvas) e.preventDefault(); });
+
+  </script>
+</body>
+</html>
